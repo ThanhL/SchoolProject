@@ -1,0 +1,525 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+
+#define MAX_ANTENNAE 26
+#define NAMESTRLEN 1
+#define MAX_LOCATIONS 100
+
+#define M_PI 3.14159265358979323846
+#define CA 30.0
+#define DISPER_CONST_1 1
+#define DISPER_CONST_2 4
+
+#define MAX_PLOTS 10
+#define P_MIN 1.0e-07
+
+typedef char namestr[NAMESTRLEN+1];
+
+typedef struct {
+	namestr antennae;
+	double x_coord;
+	double y_coord;
+	double p_out;
+	double deg;
+	double eng_angle;
+} ant_component_t;
+
+typedef struct {
+	int n_antennae;
+	ant_component_t antennaes[MAX_ANTENNAE];
+} all_antennaes_t;
+
+typedef struct {
+	double x;
+	double y;
+} location_t;
+
+typedef struct {
+	int n_location;
+	location_t points[MAX_LOCATIONS];
+} all_points_t;
+
+typedef struct {
+	location_t s_w_corner;
+	location_t n_e_corner;
+	double pixels;
+} plot_comp_t;
+
+typedef struct {
+	int n_plots;
+	plot_comp_t plots[MAX_PLOTS];
+} all_plots_t;
+/*intervals and pixels struct*/
+typedef struct {
+	double x_base;
+	double y_base;
+	double x_in;
+	double y_in;
+	int x_pix;
+	int y_pix;
+} inter_pix_t;
+	
+/*fix scans*/
+
+void print_ant_component(ant_component_t ant_component);
+void read_all_ant(all_antennaes_t *all_antennaes);
+
+double calc_pout(all_antennaes_t *all_antennaes, int n_antennae);
+void do_stage1(all_antennaes_t *all_antennaes); 
+int read_stage_spec(void);
+double distance(location_t p1, location_t p2);
+
+
+void read_all_points(all_points_t *all_points);
+
+void print_points(location_t location);
+int check_bounds(location_t location, ant_component_t ant_component);
+
+
+double dot_product(location_t p1, location_t p2);
+double magnitude(location_t p1);
+double aval_power(double aperture, double power, double d, double absorp_co,
+	double disper_const_1, double disper_const_2);
+void do_stage_2(all_antennaes_t *all_antennaes, all_points_t *all_points,
+	double absorp_co, double disper_const_1, double disper_const_2 );
+
+
+void read_all_plot_spec(all_plots_t *all_plots);
+void do_stage_3(all_plots_t *all_plots, all_antennaes_t *all_antennaes, double absorp_co, double disper_const_1, double disper_const_2 );
+void compute_i_and_p(plot_comp_t plot, inter_pix_t *inter_pix);
+
+void
+print_contour(location_t location, all_antennaes_t *all_antennaes,  double absorp_co, double disper_const_1, double disper_const_2);
+void check_print(double power);
+
+int
+main(int argc, char *argv[]) {
+	all_antennaes_t all_antennaes; 
+	
+
+	read_all_ant(&all_antennaes);
+	printf("n_antennae: %d\n", all_antennaes.n_antennae);
+	printf("P_out: %4.2f\n", calc_pout(&all_antennaes, all_antennaes.n_antennae));
+	printf("\n\n\n");
+	do_stage1(&all_antennaes);
+	printf("\n\n\n");
+	/*Stage 2 testing */
+
+	all_points_t all_points;
+	
+	read_all_points(&all_points);
+	printf("n_points: %d\n", all_points.n_location);
+	
+	printf("\n");
+	do_stage_2(&all_antennaes, &all_points, CA, DISPER_CONST_1, DISPER_CONST_2);
+	printf("\n\n\n");
+	
+	/*Stage 3 testing */
+	all_plots_t stage_3_spec;
+	read_all_plot_spec(&stage_3_spec);
+        do_stage_3(&stage_3_spec, &all_antennaes, CA, DISPER_CONST_1, DISPER_CONST_2);
+
+	return 0;
+}
+
+/*check the signal strength in bars and prints the  corresponding signal*/
+void
+check_print(double power) {
+	
+	if (power < P_MIN) {
+		printf(".");
+	} else if (P_MIN <= power && power < 3.2*P_MIN) {
+		printf("1");
+	} else if (3.2*P_MIN <= power && power < 10*P_MIN) {
+		printf("2");
+	} else if (10*P_MIN <= power && power < 3.2*10*P_MIN) {
+		printf("3");
+	} else if (3.2*10*P_MIN <= power && power < 100*P_MIN) {
+		printf("4");
+	} else {
+		printf("5");
+	}
+}
+/*Iterates through all the antennae locations, and calculates the power + prints 
+the corresponding signal at the "location" */
+void
+print_contour(location_t location, all_antennaes_t *all_antennaes,  
+	double absorp_co, double disper_const_1, double disper_const_2) {
+
+	int i;
+	double power, aperture, a_power = 0.0, d;
+	double power_sig = 0.0;
+	location_t antennae_comp;
+	
+	/*Iterates through all antennae components and checks power available*/
+	for (i=0; i< (*all_antennaes).n_antennae; i++) {
+	    /*check whether or not if the point is within antennae range */
+	    if (check_bounds( location, (*all_antennaes).antennaes[i])) {
+                aperture = (*all_antennaes).antennaes[i].eng_angle;
+        	power = (*all_antennaes).antennaes[i].p_out;
+        	antennae_comp.x = (*all_antennaes).antennaes[i].x_coord;
+        	antennae_comp.y = (*all_antennaes).antennaes[i].y_coord;
+        			
+        	if (antennae_comp.x < location.x) {
+        	       d =distance(antennae_comp, location);
+                } else {
+        	       d =distance(location, antennae_comp );
+        	}
+        	/*calculate the available power*/
+        	a_power = aval_power(aperture, power, d, absorp_co, 
+        		disper_const_1, disper_const_2);
+                /*if the power  signal before is less than the calculated
+                power, the stronger power takes its place*/
+        	if (a_power > power_sig) {
+        		/*power signal becomes the new available power*/
+        		 power_sig = a_power;
+        	}
+
+            }
+            
+            	   
+        }
+        
+        check_print(power_sig);
+}
+	
+/*do stage 3*/
+void 
+do_stage_3(all_plots_t *all_plots, all_antennaes_t *all_antennaes, 
+	double absorp_co, double disper_const_1, double disper_const_2 ) {
+
+	inter_pix_t inter_pix;
+	int i, j, k;
+	double x,y;
+	location_t location;
+	
+	printf("Stage 3\n");
+	printf("-------\n");
+
+        /*iterates through all the plots required and plots them*/
+	for (i=0; i<(*all_plots).n_plots; i++) {
+		/*compute the intervals specified by each plot*/
+		compute_i_and_p((*all_plots).plots[i], &inter_pix);
+			printf("x_base: %.2f, y_base: %.2f\n", inter_pix.x_base, inter_pix.y_base);
+	printf("x_interval: %.6f \n", inter_pix.x_in);
+	printf("y_interval: %.6f \n", inter_pix.y_in);
+	printf("x_pixel: %d\n", inter_pix.x_pix);
+	printf("y_pixel: %d\n", inter_pix.y_pix);
+	        /*x and y values are initialized to the base values of x and y*/
+		x = inter_pix.x_base;
+		y = inter_pix.y_base;
+		
+		/*for every y, there will be an x */
+		for (j=0; j<inter_pix.y_pix; j++) {
+			/*since we're starting the print from the top, 
+			the y-value will be y-max, and decrease to y-min*/
+			y = -inter_pix.y_in*j + inter_pix.y_base;
+
+			for(k=0; k<inter_pix.x_pix; k++) {
+				x = inter_pix.x_in*k + inter_pix.x_base;
+				/*assign the x,y coordinate to struct*/
+				location.x = x; location.y = y;
+
+                                /*prints the corresponding signal*/
+				print_contour(location,all_antennaes,absorp_co, 
+					disper_const_1, disper_const_2);
+				
+			}
+			/*start on new line */
+			printf("\n");
+		}
+	}
+}
+/*compute the intervals and pixels and assigns them to the strut inter_pix*/	
+void
+compute_i_and_p(plot_comp_t plot, inter_pix_t *inter_pix) {
+	/* declarations */
+	double xmax, xmin, ymax, ymin, x_pixel;
+	double x_interval, y_interval;
+	double y_pixel;
+	
+	/*assign corresponding max/min values as well as pixels(horizontal)*/
+	xmin = plot.s_w_corner.x; ymin = plot.s_w_corner.y;
+	xmax = plot.n_e_corner.x; ymax = plot.n_e_corner.y;
+	x_pixel = plot.pixels; 
+	
+	/*compute x_intervals and y_intervals */
+	x_interval = (xmax - xmin)/(x_pixel - 1);
+	printf("x_interval: %.6f \n", x_interval);
+	y_interval = 2*x_interval;
+	printf("y_interval: %.6f \n", y_interval);
+	
+	/*find the amount of pixels required in y-dir */
+	y_pixel = ((ymax - ymin)/y_interval) + 1;
+	printf("y_pixel (double): %.6f\n", y_pixel);
+	printf("y_pixel (double): %d\n", (int)(y_pixel+0.5));
+	
+	/* Rounds y-pixel accordingly */
+	y_pixel = (int)(y_pixel+0.5);
+	/*compute the new y-interval with the rounded y-pixel */
+	y_interval = (ymax - ymin)/(y_pixel - 1);
+	printf("y_interval: %.6f \n", y_interval);
+	/*with the computed intervals and pixels, assignments are made to
+	struct inter_pix */
+	(*inter_pix).x_base = plot.s_w_corner.x; 
+	(*inter_pix).y_base = plot.n_e_corner.y;
+	(*inter_pix).x_in = x_interval; (*inter_pix).x_pix = x_pixel;
+	(*inter_pix).y_in = y_interval; (*inter_pix).y_pix = y_pixel;
+}
+	
+/*reads all the plots specifications and assigns it struct all_plots*/
+void
+read_all_plot_spec(all_plots_t *all_plots) {
+	int n_plots = 0, i=0; 
+	/*reads in how many inputs there will be */
+	n_plots = read_stage_spec();
+	printf("n_plots: %d\n\n\n", n_plots);
+	/*iterates through the amount of inputs and assigns them accordingly*/
+	for (i=0; i<n_plots; i++) {
+	        scanf("%lf %lf %lf %lf %lf", 
+	        	&(*all_plots).plots[i].s_w_corner.x, 
+	        	&(*all_plots).plots[i].s_w_corner.y,
+	        	&(*all_plots).plots[i].n_e_corner.x,
+	        	&(*all_plots).plots[i].n_e_corner.y,
+	        	&(*all_plots).plots[i].pixels);
+
+		print_points((*all_plots).plots[i].s_w_corner);
+		print_points((*all_plots).plots[i].n_e_corner);
+		printf("pizels: %f\n", (*all_plots).plots[i].pixels);
+	}
+	/*amount of inputs correspond to the amount of plots*/
+        (*all_plots).n_plots = n_plots;
+        return;
+}
+		
+	
+
+/* do stage 2 */
+void 
+do_stage_2(all_antennaes_t *all_antennaes, all_points_t *all_points, 
+	double absorp_co, double disper_const_1, double disper_const_2 ) {
+
+        int i,j; 
+        /* these variables will be used for neatness*/
+        double aperture, power, d;
+        location_t antennae_comp;
+        
+        printf("Stage 2\n");
+        printf("-------\n");
+
+        
+        printf("              ");
+        for (i=0; i < (*all_antennaes).n_antennae; i++) {
+        	printf("%6s", (*all_antennaes).antennaes[i].antennae);
+        }
+        printf("\n");
+        
+        for (i=0; i < (*all_points).n_location; i++) {
+        	printf("at (%3.1f,%3.1f): ", (*all_points).points[i].x, (*all_points).points[i].y);
+        	for (j=0; j< (*all_antennaes).n_antennae; j++) {
+        		/*checks whether the point is within antennae view*/
+        		if (check_bounds( (*all_points).points[i], 
+        			(*all_antennaes).antennaes[j])) {
+        		
+        			/*assigns the corresponding components required
+        			to be put into the function aval_power*/
+        			aperture = 
+        			(*all_antennaes).antennaes[j].eng_angle;
+        			power = (*all_antennaes).antennaes[j].p_out;		
+        			antennae_comp.x = 
+        			(*all_antennaes).antennaes[j].x_coord;
+        			antennae_comp.y = 
+        			(*all_antennaes).antennaes[j].y_coord;
+        			
+        			/*compute the distance d, if statements
+        			are used to avoid wrong computation of d
+        			due to potential negative signs*/
+        			
+        			/*if antennae is before the coordinate: x1 */
+        			if (antennae_comp.x < 
+        				(*all_points).points[i].x) {
+        				d =distance(antennae_comp, 
+        					(*all_points).points[i]);
+        			} else {
+        				d =distance((*all_points).points[i], 
+        					antennae_comp );
+        			}
+        			/*print the avalaible power at the point*/
+        			printf("  %2.1e  ", aval_power(aperture, power, 
+        				d, CA, DISPER_CONST_1, DISPER_CONST_2));
+        		} else {
+        			/*if its not in the antennae view */
+        			printf("     ---    ");
+        		}
+        	}
+        	printf("Watts\n");
+
+        }     
+}
+/* calculate the distance using distance formula */
+double
+distance(location_t p1, location_t p2) {
+	return sqrt((p1.x-p2.x)*(p1.x-p2.x) + (p1.y-p2.y)*(p1.y-p2.y));
+}
+
+/* calculate the available power using the formula given */
+double
+aval_power(double aperture, double power, double d, double absorp_co, 
+	double disp_const_1, double disp_const_2) {
+        
+        /*this is the bit with the dispersion constants, requires it to be
+        raised to the power of what the dispersion constant is */
+	double absorp_bit = pow((disp_const_1 + (absorp_co*d)), disp_const_2);
+	/*compute the available power */
+        return (360/aperture)*(power/absorp_bit);
+}
+
+/*calculate the dot product, required to determine whether the coordinate
+is seen within the antennae's field of view */
+double 
+dot_product(location_t p1, location_t p2) {
+	return ((p1.x)*(p2.x) + (p1.y)*(p2.y));
+}
+
+/*calculate the magnitude of a vector */
+double 
+magnitude(location_t p1) {
+	return (sqrt((p1.x)*(p1.x) + (p1.y)*(p1.y)));
+}
+
+/*determine whether the point is within the antennae's field of view*/
+int
+check_bounds(location_t location, ant_component_t ant_component) {
+	double half_aper_deg, deg_loc;
+	double x, y;
+	
+	/*v1 correspongds to vector from the antennae to the point */
+	/*v2 corresponds to the direction the antennae is facing */
+	location_t v1, v2;
+	
+        /*half the aperture degrees*/
+	half_aper_deg = (ant_component.eng_angle/2);
+	/* x and y components of v1 */
+	x = location.x - ant_component.x_coord;
+        y = location.y - ant_component.y_coord;
+	v1.x = x; v1.y = y;
+	
+	/* xand y components of v2 */
+	v2.x = (sin(ant_component.deg*(M_PI/180)));
+	v2.y = (cos(ant_component.deg*(M_PI/180)));
+	
+	/*location of the point with respect to the antennae in degrees. It
+	is calculated by using the dot product formula */
+	deg_loc = 
+	(acos(dot_product(v1,v2)/(magnitude(v1)*magnitude(v2))))*(180/M_PI); 
+	
+	/*if the deg_loc is smaller than the aperture then it is within the
+	antennaes field of view */
+	if (deg_loc < half_aper_deg) {
+		/*within field of view */
+		return 1;
+	}
+	/*not in field of view */
+	return 0;
+}
+
+void
+print_points(location_t location) {
+	printf("location: %4.2f %4.2f\n", location.x, location.y);
+}
+
+/*read all the points inputted*/
+void
+read_all_points(all_points_t *all_points) {
+	int n_points = 0, i=0; 
+	/*reads in how many inputs there will be */
+	n_points = read_stage_spec();
+        /*iterates through the amount of inputs and assigns them accordingly*/
+	for (i=0; i<n_points; i++) {
+		scanf("%lf %lf", &(*all_points).points[i].x, 
+			&(*all_points).points[i].y);
+		print_points((*all_points).points[i]);
+	}
+	/*number of inputs correspond to the number of points */
+        (*all_points).n_location = n_points;	
+}
+	
+
+
+/* reads the specification of how many inputs there will be*/
+int
+read_stage_spec(void) {
+	int ch, n_input;
+	/*reads in the amount of inputs */
+	scanf("%d", &n_input);
+	/*chucks out the comments after*/
+	while ((ch=getchar())!=EOF)	{
+		/*stop to go to the new line */
+		if (ch=='\n')	{
+			break;
+		}
+	}
+	return n_input;
+}	
+
+/*do stage 1*/
+void
+do_stage1(all_antennaes_t *all_antennaes) {
+	printf("Stage 1\n");
+	printf("-------\n");
+	printf("number of antennae: %d\n", all_antennaes->n_antennae);
+	printf("total power output: %4.4f Watts\n", calc_pout(all_antennaes, 
+		all_antennaes->n_antennae));
+	return;
+}
+	
+/* calculate the total power output of the antennaes*/	
+double
+calc_pout(all_antennaes_t *all_antennaes, int n_antennae) {
+	double p_out = 0.0;
+	int i;
+	/*Iterate through the struct and sums the power component*/
+	for (i=0; i<n_antennae; i++) {
+		p_out += (*all_antennaes).antennaes[i].p_out;
+	}
+	return p_out;
+}
+	
+/*read all antennae components */
+void
+read_all_ant(all_antennaes_t *all_antennaes) {
+	int n_ant = 0, i=0; 
+	/*reads in how many inputs there will be */
+	n_ant = read_stage_spec();
+        /*iterates through the amount of inputs and assigns them accordingly*/
+	for (i=0; i<n_ant; i++) {
+	        scanf("%s %lf %lf %lf %lf %lf", 
+	        	(*all_antennaes).antennaes[i].antennae,
+	        	&(*all_antennaes).antennaes[i].x_coord,
+	        	&(*all_antennaes).antennaes[i].y_coord,
+	        	&(*all_antennaes).antennaes[i].p_out,
+	        	&(*all_antennaes).antennaes[i].deg,
+	        	&(*all_antennaes).antennaes[i].eng_angle);
+
+		print_ant_component((*all_antennaes).antennaes[i]);
+	}
+	/*the amount of antennaes correspond to the amount of input*/
+        (*all_antennaes).n_antennae = n_ant;	
+}
+
+
+
+
+void
+print_ant_component(ant_component_t ant_component) {
+	printf("\nant_components.... \n");
+	printf("antennae: %4.2s\n", ant_component.antennae);
+	printf("x_coord: %4.2f\n", ant_component.x_coord);
+	printf("y_coord: %4.2f\n", ant_component.y_coord);
+	printf("p_out: %4.3f\n", ant_component.p_out);
+	printf("deg: %4.2f\n", ant_component.deg);
+	printf("eng_angle: %4.2f\n", ant_component.eng_angle);
+	printf("End component.\n\n");
+}
+		
